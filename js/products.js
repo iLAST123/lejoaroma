@@ -186,20 +186,27 @@ function renderStars(n) {
   return `<span class="stars">${full}${empty}</span>`;
 }
 
+function escapeAttr(s) {
+  return String(s || '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function renderProductCard(p) {
   const price = formatBRL(p.price);
   const from = p.priceFrom ? `<span class="price-from">${formatBRL(p.priceFrom)}</span>` : '';
-  const badge = p.badge ? `<span class="badge">${p.badge}</span>` : '';
+  const badge = p.badge ? `<span class="badge">${escapeAttr(p.badge)}</span>` : '';
+  const name = escapeAttr(p.name);
   return `
     <article class="product-card" data-id="${p.id}">
       <a href="produto.html?id=${p.id}" class="card-media">
         ${badge}
-        <img src="${p.image}" alt="${p.name}" loading="lazy">
+        <img src="${p.image}" alt="${name}" loading="lazy">
       </a>
       <button class="favorite" aria-label="Favoritar" onclick="this.classList.toggle('active')">♡</button>
       <div class="card-body">
-        <span class="card-category">${p.categoryLabel}</span>
-        <a href="produto.html?id=${p.id}"><h3 class="card-name">${p.name}</h3></a>
+        <span class="card-category">${escapeAttr(p.categoryLabel)}</span>
+        <a href="produto.html?id=${p.id}"><h3 class="card-name">${name}</h3></a>
         <div class="card-rating">
           ${renderStars(p.rating)}
           <span>(${p.reviews})</span>
@@ -208,7 +215,7 @@ function renderProductCard(p) {
           ${from}
           <span class="price-to">${price}</span>
         </div>
-        <button class="card-add" onclick='addToCart({id:"${p.id}",name:"${p.name}",price:${p.price},image:"${p.image}",variant:"${p.fragranceLabel || ''}"})'>
+        <button class="card-add" data-add-to-cart="${p.id}">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
           Adicionar
         </button>
@@ -216,3 +223,20 @@ function renderProductCard(p) {
     </article>
   `;
 }
+
+// Global delegation — any [data-add-to-cart="<id>"] click adds that product.
+// Avoids inline onclick with long base64 image URLs and quote-escaping bugs.
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-add-to-cart]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-add-to-cart');
+  const p = getProductById(id);
+  if (!p) return;
+  addToCart({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    image: p.image,
+    variant: p.fragranceLabel || ''
+  });
+});

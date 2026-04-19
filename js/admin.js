@@ -25,7 +25,8 @@ const FRAGRANCE_LABELS = {
 let products = [];
 let searchQuery = '';
 let editingId = null;
-let pendingImageDataUrl = null; // Base64 data URL to embed on save
+let pendingImageDataUrl = null;      // Base64 data URL ready to embed
+let pendingImagePromise = Promise.resolve(null); // In-flight resize, if any
 
 // ============================================
 // FIRESTORE CRUD
@@ -187,6 +188,7 @@ const modal = document.getElementById('product-modal');
 function openModal(product) {
   editingId = product ? product.id : null;
   pendingImageDataUrl = null;
+  pendingImagePromise = Promise.resolve(null);
 
   document.getElementById('modal-title').textContent = product ? 'Editar produto' : 'Novo produto';
 
@@ -220,6 +222,7 @@ function closeModal() {
   document.body.style.overflow = '';
   editingId = null;
   pendingImageDataUrl = null;
+  pendingImagePromise = Promise.resolve(null);
 }
 
 function updatePreview(src) {
@@ -235,26 +238,38 @@ document.getElementById('modal-close').addEventListener('click', closeModal);
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
 modal.querySelector('.modal-backdrop').addEventListener('click', closeModal);
 
-// Image file upload → resize and keep as base64 until save
-document.getElementById('p-image-file').addEventListener('change', async e => {
+// Image file upload → resize and keep as base64 until save.
+// Store the in-flight promise so that save can await it if the user is quick.
+document.getElementById('p-image-file').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
-  try {
-    const dataUrl = await resizeImageToDataUrl(file, 800);
-    pendingImageDataUrl = dataUrl;
-    document.getElementById('p-image-url').value = '';
-    updatePreview(dataUrl);
-  } catch (err) {
-    console.error(err);
-    showToast('Erro ao processar imagem');
-  }
+  document.getElementById('p-image-url').value = '';
+  updatePreview(null);
+  const preview = document.getElementById('image-preview');
+  preview.innerHTML = '<span class="image-placeholder">⏳ Processando…</span>';
+
+  pendingImagePromise = resizeImageToDataUrl(file, 800)
+    .then(dataUrl => {
+      pendingImageDataUrl = dataUrl;
+      updatePreview(dataUrl);
+      return dataUrl;
+    })
+    .catch(err => {
+      console.error(err);
+      showToast('Erro ao processar imagem');
+      pendingImageDataUrl = null;
+      updatePreview(null);
+      return null;
+    });
 });
 
-// Image URL input
+// Image URL input (alternative to file upload)
 document.getElementById('p-image-url').addEventListener('input', e => {
   const url = e.target.value.trim();
   if (url) {
     pendingImageDataUrl = null;
+    pendingImagePromise = Promise.resolve(null);
+    document.getElementById('p-image-file').value = '';
     document.getElementById('p-image').value = url;
     updatePreview(url);
   }
@@ -288,6 +303,9 @@ document.getElementById('modal-save').addEventListener('click', async () => {
   saveBtn.textContent = 'Salvando…';
 
   try {
+    // Wait for any in-flight image resize to finish before saving
+    await pendingImagePromise;
+
     // Use the uploaded-and-resized image (base64) if present
     if (pendingImageDataUrl) {
       image = pendingImageDataUrl;
