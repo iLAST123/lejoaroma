@@ -1,9 +1,12 @@
 /* ============================================
-   LEJÔ — Product catalog (mock data)
+   LEJÔ — Product catalog
    Shared across loja.html, produto.html, index.html
+   Products managed via admin.html (stored in localStorage)
    ============================================ */
 
-const PRODUCTS = [
+const PRODUCTS_KEY = 'lejo_products';
+
+const DEFAULT_PRODUCTS = [
   {
     id: "difusor-cha-branco",
     name: "Difusor Chá Branco e Bambu",
@@ -127,6 +130,28 @@ const PRODUCTS = [
     image: "https://placehold.co/600x600/F9EEE8/A87850?text=Kit+Namorados&font=playfair"
   }
 ];
+
+function loadProducts() {
+  try {
+    const raw = localStorage.getItem(PRODUCTS_KEY);
+    if (!raw) return DEFAULT_PRODUCTS.slice();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    return DEFAULT_PRODUCTS.slice();
+  } catch {
+    return DEFAULT_PRODUCTS.slice();
+  }
+}
+
+function saveProducts(list) {
+  localStorage.setItem(PRODUCTS_KEY, JSON.stringify(list));
+}
+
+function resetProducts() {
+  localStorage.removeItem(PRODUCTS_KEY);
+}
+
+const PRODUCTS = loadProducts();
 
 const CATEGORIES = [
   { id: 'all', label: 'Todos os Produtos' },
