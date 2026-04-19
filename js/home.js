@@ -1,10 +1,11 @@
 /* ============================================
    HOME — featured products + testimonials carousel
    ============================================ */
-document.addEventListener('DOMContentLoaded', () => {
-  // Featured products
+document.addEventListener('DOMContentLoaded', async () => {
+  // Featured products (await Firestore load)
   const grid = document.getElementById('featured-grid');
   if (grid) {
+    await productsReady;
     const featured = PRODUCTS.slice(0, 4);
     grid.innerHTML = featured.map(renderProductCard).join('');
   }

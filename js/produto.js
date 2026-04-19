@@ -1,7 +1,8 @@
 /* ============================================
    PRODUTO (PDP) — render details, variants, cart
    ============================================ */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await productsReady;
   const id = new URLSearchParams(location.search).get('id') || 'difusor-cha-branco';
   const product = getProductById(id) || PRODUCTS[0];
 

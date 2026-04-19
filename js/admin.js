@@ -1,10 +1,6 @@
 /* ============================================
-   ADMIN PANEL — auth, CRUD, image upload, backup
+   ADMIN PANEL — Firebase Auth + Firestore + Storage
    ============================================ */
-
-const ADMIN_SESSION_KEY = 'lejo_admin_session';
-const ADMIN_PW_KEY = 'lejo_admin_pw';
-const DEFAULT_PW = 'lejo2025';
 
 const CATEGORY_LABELS = {
   'difusores': 'Difusores de Aroma',
@@ -24,31 +20,37 @@ const FRAGRANCE_LABELS = {
 };
 
 // ============================================
-// AUTH
-// ============================================
-function getStoredPassword() {
-  return localStorage.getItem(ADMIN_PW_KEY) || DEFAULT_PW;
-}
-function isAuthenticated() {
-  return sessionStorage.getItem(ADMIN_SESSION_KEY) === '1';
-}
-function signIn() {
-  sessionStorage.setItem(ADMIN_SESSION_KEY, '1');
-}
-function signOut() {
-  sessionStorage.removeItem(ADMIN_SESSION_KEY);
-  location.reload();
-}
-
-// ============================================
 // STATE
 // ============================================
-let products = loadProducts();
+let products = [];
 let searchQuery = '';
 let editingId = null;
+let pendingImageBlob = null;   // File selected but not yet uploaded
+let pendingImageDataUrl = null; // Local preview data URL for the pending blob
 
-function persist() {
-  saveProducts(products);
+// ============================================
+// FIRESTORE CRUD
+// ============================================
+async function loadProductsFromFirestore() {
+  const snap = await fbDb.collection(PRODUCTS_COLLECTION)
+    .orderBy('createdAt', 'desc')
+    .get();
+  return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
+
+async function saveProductDoc(id, data) {
+  await fbDb.collection(PRODUCTS_COLLECTION).doc(id).set(data, { merge: true });
+}
+
+async function deleteProductDoc(id) {
+  await fbDb.collection(PRODUCTS_COLLECTION).doc(id).delete();
+}
+
+async function uploadProductImage(blob, id) {
+  const ext = (blob.type && blob.type.split('/')[1]) || 'jpg';
+  const ref = fbStorage.ref().child(`products/${id}-${Date.now()}.${ext}`);
+  const snap = await ref.put(blob);
+  return await snap.ref.getDownloadURL();
 }
 
 function slugify(text) {
@@ -70,9 +72,9 @@ function uniqueId(base) {
 }
 
 // ============================================
-// IMAGE RESIZE (prevent huge localStorage)
+// IMAGE RESIZE (reduces upload size)
 // ============================================
-function resizeImage(file, maxSize = 800) {
+function resizeImageToBlob(file, maxSize = 1200) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
@@ -93,7 +95,10 @@ function resizeImage(file, maxSize = 800) {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
+        canvas.toBlob(blob => {
+          if (blob) resolve({ blob, dataUrl: canvas.toDataURL('image/jpeg', 0.85) });
+          else reject(new Error('Falha ao gerar blob'));
+        }, 'image/jpeg', 0.85);
       };
       img.onerror = reject;
       img.src = e.target.result;
@@ -169,6 +174,16 @@ function escapeHTML(s) {
   ));
 }
 
+async function refreshProducts() {
+  try {
+    products = await loadProductsFromFirestore();
+    renderList();
+  } catch (err) {
+    console.error(err);
+    showToast('Erro ao carregar produtos');
+  }
+}
+
 // ============================================
 // MODAL — product form
 // ============================================
@@ -176,6 +191,9 @@ const modal = document.getElementById('product-modal');
 
 function openModal(product) {
   editingId = product ? product.id : null;
+  pendingImageBlob = null;
+  pendingImageDataUrl = null;
+
   document.getElementById('modal-title').textContent = product ? 'Editar produto' : 'Novo produto';
 
   document.getElementById('p-id').value = product?.id || '';
@@ -196,10 +214,7 @@ function openModal(product) {
   document.getElementById('p-duration').value = details['Duração estimada'] || '';
   document.getElementById('p-composition').value = details['Composição'] || '';
 
-  // Preview
   updatePreview(product?.image);
-
-  // Clear file input
   document.getElementById('p-image-file').value = '';
 
   modal.classList.add('open');
@@ -210,6 +225,8 @@ function closeModal() {
   modal.classList.remove('open');
   document.body.style.overflow = '';
   editingId = null;
+  pendingImageBlob = null;
+  pendingImageDataUrl = null;
 }
 
 function updatePreview(src) {
@@ -225,16 +242,18 @@ document.getElementById('modal-close').addEventListener('click', closeModal);
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
 modal.querySelector('.modal-backdrop').addEventListener('click', closeModal);
 
-// Image file upload
+// Image file upload (local preview only — upload happens on save)
 document.getElementById('p-image-file').addEventListener('change', async e => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const dataUrl = await resizeImage(file, 800);
-    document.getElementById('p-image').value = dataUrl;
+    const { blob, dataUrl } = await resizeImageToBlob(file, 1200);
+    pendingImageBlob = blob;
+    pendingImageDataUrl = dataUrl;
     document.getElementById('p-image-url').value = '';
     updatePreview(dataUrl);
   } catch (err) {
+    console.error(err);
     showToast('Erro ao processar imagem');
   }
 });
@@ -243,23 +262,22 @@ document.getElementById('p-image-file').addEventListener('change', async e => {
 document.getElementById('p-image-url').addEventListener('input', e => {
   const url = e.target.value.trim();
   if (url) {
+    pendingImageBlob = null;
+    pendingImageDataUrl = null;
     document.getElementById('p-image').value = url;
     updatePreview(url);
   }
 });
 
 // Save
-document.getElementById('modal-save').addEventListener('click', () => {
+document.getElementById('modal-save').addEventListener('click', async () => {
+  const saveBtn = document.getElementById('modal-save');
   const name = document.getElementById('p-name').value.trim();
   const price = parseFloat(document.getElementById('p-price').value);
-  const image = document.getElementById('p-image').value.trim();
+  let image = document.getElementById('p-image').value.trim();
 
   if (!name) { showToast('Informe o nome do produto'); return; }
   if (!price || price <= 0) { showToast('Informe um preço válido'); return; }
-  if (!image) {
-    document.getElementById('p-image').value =
-      'https://placehold.co/600x600/F2E8DC/A87850?text=' + encodeURIComponent(name.slice(0, 12)) + '&font=playfair';
-  }
 
   const category = document.getElementById('p-category').value;
   const fragrance = document.getElementById('p-fragrance').value;
@@ -273,37 +291,51 @@ document.getElementById('modal-save').addEventListener('click', () => {
   if (composition) details['Composição'] = composition;
   details['Feito em'] = 'São Paulo, Brasil 🇧🇷';
 
-  const product = {
-    id: editingId || uniqueId(slugify(name)),
-    name,
-    category,
-    categoryLabel: CATEGORY_LABELS[category] || category,
-    fragrance,
-    fragranceLabel: FRAGRANCE_LABELS[fragrance] || fragrance,
-    price,
-    priceFrom: parseFloat(document.getElementById('p-price-from').value) || null,
-    rating: Math.max(0, Math.min(5, parseInt(document.getElementById('p-rating').value) || 0)),
-    reviews: parseInt(document.getElementById('p-reviews').value) || 0,
-    badge: document.getElementById('p-badge').value.trim() || null,
-    desc: document.getElementById('p-desc').value.trim(),
-    image: document.getElementById('p-image').value,
-    details: Object.keys(details).length > 1 ? details : undefined
-  };
+  const id = editingId || uniqueId(slugify(name));
 
-  if (editingId) {
-    const idx = products.findIndex(p => p.id === editingId);
-    if (idx >= 0) products[idx] = product;
-  } else {
-    products.unshift(product);
-  }
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Salvando…';
 
   try {
-    persist();
-    renderList();
+    // Upload pending image file (if any) to Storage first
+    if (pendingImageBlob) {
+      image = await uploadProductImage(pendingImageBlob, id);
+    }
+    if (!image) {
+      image = 'https://placehold.co/600x600/F2E8DC/A87850?text=' +
+        encodeURIComponent(name.slice(0, 12)) + '&font=playfair';
+    }
+
+    const data = {
+      name,
+      category,
+      categoryLabel: CATEGORY_LABELS[category] || category,
+      fragrance,
+      fragranceLabel: FRAGRANCE_LABELS[fragrance] || fragrance,
+      price,
+      priceFrom: parseFloat(document.getElementById('p-price-from').value) || null,
+      rating: Math.max(0, Math.min(5, parseInt(document.getElementById('p-rating').value) || 0)),
+      reviews: parseInt(document.getElementById('p-reviews').value) || 0,
+      badge: document.getElementById('p-badge').value.trim() || null,
+      desc: document.getElementById('p-desc').value.trim(),
+      image,
+      details: Object.keys(details).length > 1 ? details : null,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    if (!editingId) {
+      data.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+    }
+
+    await saveProductDoc(id, data);
+    await refreshProducts();
     closeModal();
     showToast(editingId ? '✓ Produto atualizado!' : '✓ Produto adicionado!');
   } catch (err) {
-    showToast('Erro ao salvar — armazenamento cheio?');
+    console.error(err);
+    showToast('Erro ao salvar: ' + (err.message || 'tente novamente'));
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Salvar produto';
   }
 });
 
@@ -325,11 +357,15 @@ document.getElementById('products-list').addEventListener('click', e => {
     confirmDialog(
       'Excluir produto',
       `Tem certeza que deseja excluir "${product.name}"? Esta ação não pode ser desfeita.`,
-      () => {
-        products = products.filter(p => p.id !== id);
-        persist();
-        renderList();
-        showToast('Produto excluído');
+      async () => {
+        try {
+          await deleteProductDoc(id);
+          await refreshProducts();
+          showToast('Produto excluído');
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao excluir');
+        }
       }
     );
   }
@@ -356,8 +392,9 @@ function closeConfirm() {
 document.getElementById('confirm-cancel').addEventListener('click', closeConfirm);
 confirmModal.querySelector('.modal-backdrop').addEventListener('click', closeConfirm);
 document.getElementById('confirm-ok').addEventListener('click', () => {
-  if (confirmCallback) confirmCallback();
+  const cb = confirmCallback;
   closeConfirm();
+  if (cb) cb();
 });
 
 // ============================================
@@ -426,12 +463,26 @@ importInput.addEventListener('change', e => {
       if (!Array.isArray(parsed)) throw new Error('Formato inválido');
       confirmDialog(
         'Importar produtos',
-        `Isso irá substituir ${products.length} produto(s) por ${parsed.length} do arquivo. Continuar?`,
-        () => {
-          products = parsed;
-          persist();
-          renderList();
-          showToast('✓ Produtos importados!');
+        `Isso irá adicionar/atualizar ${parsed.length} produto(s) no Firestore. Continuar?`,
+        async () => {
+          try {
+            const batch = fbDb.batch();
+            parsed.forEach(p => {
+              const id = p.id || uniqueId(slugify(p.name || 'produto'));
+              const { id: _, ...rest } = p;
+              batch.set(fbDb.collection(PRODUCTS_COLLECTION).doc(id), {
+                ...rest,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+              }, { merge: true });
+            });
+            await batch.commit();
+            await refreshProducts();
+            showToast('✓ Produtos importados!');
+          } catch (err) {
+            console.error(err);
+            showToast('Erro ao importar');
+          }
         }
       );
     } catch {
@@ -445,58 +496,96 @@ importInput.addEventListener('change', e => {
 document.getElementById('reset-btn').addEventListener('click', () => {
   confirmDialog(
     'Restaurar padrão',
-    'Isso irá substituir todos os produtos pelos 8 exemplos padrão. Continuar?',
-    () => {
-      resetProducts();
-      products = DEFAULT_PRODUCTS.slice();
-      persist();
-      renderList();
-      showToast('✓ Padrão restaurado');
+    'Isso irá apagar todos os produtos e recriar os 8 exemplos padrão. Continuar?',
+    async () => {
+      try {
+        // Delete all existing
+        const snap = await fbDb.collection(PRODUCTS_COLLECTION).get();
+        const delBatch = fbDb.batch();
+        snap.docs.forEach(d => delBatch.delete(d.ref));
+        await delBatch.commit();
+        // Insert defaults
+        const addBatch = fbDb.batch();
+        DEFAULT_PRODUCTS.forEach(p => {
+          const { id, ...rest } = p;
+          addBatch.set(fbDb.collection(PRODUCTS_COLLECTION).doc(id), {
+            ...rest,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        });
+        await addBatch.commit();
+        await refreshProducts();
+        showToast('✓ Padrão restaurado');
+      } catch (err) {
+        console.error(err);
+        showToast('Erro ao restaurar');
+      }
     }
   );
 });
 
 // ============================================
-// CHANGE PASSWORD
+// LOGIN / AUTH (Firebase)
 // ============================================
-document.getElementById('change-pw-btn').addEventListener('click', () => {
-  const input = document.getElementById('new-password');
-  const val = input.value.trim();
-  if (val.length < 4) {
-    showToast('Senha precisa ter ao menos 4 caracteres');
-    return;
-  }
-  localStorage.setItem(ADMIN_PW_KEY, val);
-  input.value = '';
-  showToast('✓ Senha atualizada');
-});
-
-// ============================================
-// LOGIN FLOW
-// ============================================
-document.getElementById('login-form').addEventListener('submit', e => {
+document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
+  const email = document.getElementById('email').value.trim();
   const pw = document.getElementById('pw').value;
-  if (pw === getStoredPassword()) {
-    signIn();
-    showApp();
-  } else {
-    const input = document.getElementById('pw');
-    input.classList.add('error');
-    setTimeout(() => input.classList.remove('error'), 600);
-    showToast('Senha incorreta');
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+
+  try {
+    await fbAuth.signInWithEmailAndPassword(email, pw);
+    // onAuthStateChanged will call showApp()
+  } catch (err) {
+    console.error(err);
+    const msg = err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found'
+      ? 'E-mail ou senha incorretos'
+      : (err.message || 'Erro ao entrar');
+    errEl.textContent = msg;
+    document.getElementById('pw').classList.add('error');
+    setTimeout(() => document.getElementById('pw').classList.remove('error'), 600);
   }
 });
 
-document.getElementById('logout-btn').addEventListener('click', signOut);
+document.getElementById('logout-btn').addEventListener('click', () => {
+  fbAuth.signOut();
+});
 
-function showApp() {
+// Reset password
+const resetBtn = document.getElementById('reset-pw-btn');
+if (resetBtn) {
+  resetBtn.addEventListener('click', async () => {
+    const email = document.getElementById('email').value.trim();
+    if (!email) {
+      showToast('Digite seu e-mail primeiro');
+      return;
+    }
+    try {
+      await fbAuth.sendPasswordResetEmail(email);
+      showToast('✓ E-mail de redefinição enviado');
+    } catch (err) {
+      console.error(err);
+      showToast('Erro: ' + (err.message || 'tente novamente'));
+    }
+  });
+}
+
+async function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('admin-app').style.display = 'block';
-  renderList();
+  await refreshProducts();
 }
 
-// Init
-if (isAuthenticated()) {
-  showApp();
+function showLogin() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('admin-app').style.display = 'none';
+  document.getElementById('pw').value = '';
 }
+
+// Single source of truth: Firebase auth state
+fbAuth.onAuthStateChanged(user => {
+  if (user) showApp();
+  else showLogin();
+});

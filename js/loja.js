@@ -1,7 +1,8 @@
 /* ============================================
    LOJA — filters, sort, grid rendering
    ============================================ */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await productsReady;
   const state = {
     category: 'all',
     fragrances: new Set(),

@@ -1,10 +1,9 @@
 /* ============================================
-   LEJÔ — Product catalog
-   Shared across loja.html, produto.html, index.html
-   Products managed via admin.html (stored in localStorage)
+   LEJÔ — Product catalog (Firebase-powered)
+   Loaded asynchronously from Firestore.
+   Page scripts must `await productsReady` before
+   reading the PRODUCTS array or calling getProductById.
    ============================================ */
-
-const PRODUCTS_KEY = 'lejo_products';
 
 const DEFAULT_PRODUCTS = [
   {
@@ -131,28 +130,6 @@ const DEFAULT_PRODUCTS = [
   }
 ];
 
-function loadProducts() {
-  try {
-    const raw = localStorage.getItem(PRODUCTS_KEY);
-    if (!raw) return DEFAULT_PRODUCTS.slice();
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    return DEFAULT_PRODUCTS.slice();
-  } catch {
-    return DEFAULT_PRODUCTS.slice();
-  }
-}
-
-function saveProducts(list) {
-  localStorage.setItem(PRODUCTS_KEY, JSON.stringify(list));
-}
-
-function resetProducts() {
-  localStorage.removeItem(PRODUCTS_KEY);
-}
-
-const PRODUCTS = loadProducts();
-
 const CATEGORIES = [
   { id: 'all', label: 'Todos os Produtos' },
   { id: 'difusores', label: 'Difusores de Aroma' },
@@ -171,6 +148,27 @@ const FRAGRANCES = [
   { id: 'flor-algodao', label: 'Flor de Algodão' },
   { id: 'rosa', label: 'Rosa' }
 ];
+
+// Populated asynchronously by fetchProducts(). Readers must await productsReady first.
+let PRODUCTS = [];
+
+async function fetchProducts() {
+  try {
+    const snap = await fbDb.collection(PRODUCTS_COLLECTION)
+      .orderBy('createdAt', 'desc')
+      .get();
+    if (snap.empty) return DEFAULT_PRODUCTS.slice();
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (err) {
+    console.error('[products] Firestore fetch failed, using defaults:', err);
+    return DEFAULT_PRODUCTS.slice();
+  }
+}
+
+const productsReady = fetchProducts().then(list => {
+  PRODUCTS = list;
+  return list;
+});
 
 function getProductById(id) {
   return PRODUCTS.find(p => p.id === id);
