@@ -154,11 +154,17 @@ let PRODUCTS = [];
 
 async function fetchProducts() {
   try {
-    const snap = await fbDb.collection(PRODUCTS_COLLECTION)
-      .orderBy('createdAt', 'desc')
-      .get();
+    const snap = await fbDb.collection(PRODUCTS_COLLECTION).get();
     if (snap.empty) return DEFAULT_PRODUCTS.slice();
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    // Sort by createdAt desc when present (newer first); fallback to name
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+      const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+      if (ta !== tb) return tb - ta;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+    return list;
   } catch (err) {
     console.error('[products] Firestore fetch failed, using defaults:', err);
     return DEFAULT_PRODUCTS.slice();

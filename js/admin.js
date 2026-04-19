@@ -31,10 +31,15 @@ let pendingImageDataUrl = null; // Base64 data URL to embed on save
 // FIRESTORE CRUD
 // ============================================
 async function loadProductsFromFirestore() {
-  const snap = await fbDb.collection(PRODUCTS_COLLECTION)
-    .orderBy('createdAt', 'desc')
-    .get();
-  return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const snap = await fbDb.collection(PRODUCTS_COLLECTION).get();
+  const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  list.sort((a, b) => {
+    const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+    const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+    if (ta !== tb) return tb - ta;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  return list;
 }
 
 async function saveProductDoc(id, data) {

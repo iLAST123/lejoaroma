@@ -16,7 +16,9 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 
-const fbAuth = firebase.auth();
+// Public pages load only Firestore. Admin also loads Auth.
+// Guard so missing SDKs don't break Firestore initialization.
+const fbAuth = typeof firebase.auth === 'function' ? firebase.auth() : null;
 const fbDb = firebase.firestore();
 
 const PRODUCTS_COLLECTION = 'products';
