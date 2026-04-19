@@ -25,8 +25,7 @@ const FRAGRANCE_LABELS = {
 let products = [];
 let searchQuery = '';
 let editingId = null;
-let pendingImageBlob = null;   // File selected but not yet uploaded
-let pendingImageDataUrl = null; // Local preview data URL for the pending blob
+let pendingImageDataUrl = null; // Base64 data URL to embed on save
 
 // ============================================
 // FIRESTORE CRUD
@@ -44,13 +43,6 @@ async function saveProductDoc(id, data) {
 
 async function deleteProductDoc(id) {
   await fbDb.collection(PRODUCTS_COLLECTION).doc(id).delete();
-}
-
-async function uploadProductImage(blob, id) {
-  const ext = (blob.type && blob.type.split('/')[1]) || 'jpg';
-  const ref = fbStorage.ref().child(`products/${id}-${Date.now()}.${ext}`);
-  const snap = await ref.put(blob);
-  return await snap.ref.getDownloadURL();
 }
 
 function slugify(text) {
@@ -72,9 +64,10 @@ function uniqueId(base) {
 }
 
 // ============================================
-// IMAGE RESIZE (reduces upload size)
+// IMAGE RESIZE → base64 (embed directly in Firestore doc)
+// Keeps each product under ~300KB so the 1 MiB doc limit is safe.
 // ============================================
-function resizeImageToBlob(file, maxSize = 1200) {
+function resizeImageToDataUrl(file, maxSize = 800) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = e => {
@@ -95,10 +88,7 @@ function resizeImageToBlob(file, maxSize = 1200) {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        canvas.toBlob(blob => {
-          if (blob) resolve({ blob, dataUrl: canvas.toDataURL('image/jpeg', 0.85) });
-          else reject(new Error('Falha ao gerar blob'));
-        }, 'image/jpeg', 0.85);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
       };
       img.onerror = reject;
       img.src = e.target.result;
@@ -191,7 +181,6 @@ const modal = document.getElementById('product-modal');
 
 function openModal(product) {
   editingId = product ? product.id : null;
-  pendingImageBlob = null;
   pendingImageDataUrl = null;
 
   document.getElementById('modal-title').textContent = product ? 'Editar produto' : 'Novo produto';
@@ -225,7 +214,6 @@ function closeModal() {
   modal.classList.remove('open');
   document.body.style.overflow = '';
   editingId = null;
-  pendingImageBlob = null;
   pendingImageDataUrl = null;
 }
 
@@ -242,13 +230,12 @@ document.getElementById('modal-close').addEventListener('click', closeModal);
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
 modal.querySelector('.modal-backdrop').addEventListener('click', closeModal);
 
-// Image file upload (local preview only — upload happens on save)
+// Image file upload → resize and keep as base64 until save
 document.getElementById('p-image-file').addEventListener('change', async e => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const { blob, dataUrl } = await resizeImageToBlob(file, 1200);
-    pendingImageBlob = blob;
+    const dataUrl = await resizeImageToDataUrl(file, 800);
     pendingImageDataUrl = dataUrl;
     document.getElementById('p-image-url').value = '';
     updatePreview(dataUrl);
@@ -262,7 +249,6 @@ document.getElementById('p-image-file').addEventListener('change', async e => {
 document.getElementById('p-image-url').addEventListener('input', e => {
   const url = e.target.value.trim();
   if (url) {
-    pendingImageBlob = null;
     pendingImageDataUrl = null;
     document.getElementById('p-image').value = url;
     updatePreview(url);
@@ -297,9 +283,9 @@ document.getElementById('modal-save').addEventListener('click', async () => {
   saveBtn.textContent = 'Salvando…';
 
   try {
-    // Upload pending image file (if any) to Storage first
-    if (pendingImageBlob) {
-      image = await uploadProductImage(pendingImageBlob, id);
+    // Use the uploaded-and-resized image (base64) if present
+    if (pendingImageDataUrl) {
+      image = pendingImageDataUrl;
     }
     if (!image) {
       image = 'https://placehold.co/600x600/F2E8DC/A87850?text=' +
