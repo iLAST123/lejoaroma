@@ -526,24 +526,24 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 });
 
 // ============================================
-// LOGIN / AUTH (Firebase)
+// LOGIN / AUTH (Firebase — senha única, e-mail fixo)
 // ============================================
+// Firebase Auth exige e-mail, mas escondemos do usuário.
+// O admin digita apenas a senha; usamos este e-mail por baixo.
+const ADMIN_EMAIL = 'guilherme.almeida5522@gmail.com';
+
 document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const email = document.getElementById('email').value.trim();
   const pw = document.getElementById('pw').value;
   const errEl = document.getElementById('login-error');
   errEl.textContent = '';
 
   try {
-    await fbAuth.signInWithEmailAndPassword(email, pw);
+    await fbAuth.signInWithEmailAndPassword(ADMIN_EMAIL, pw);
     // onAuthStateChanged will call showApp()
   } catch (err) {
     console.error(err);
-    const msg = err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found'
-      ? 'E-mail ou senha incorretos'
-      : (err.message || 'Erro ao entrar');
-    errEl.textContent = msg;
+    errEl.textContent = 'Senha incorreta';
     document.getElementById('pw').classList.add('error');
     setTimeout(() => document.getElementById('pw').classList.remove('error'), 600);
   }
@@ -552,25 +552,6 @@ document.getElementById('login-form').addEventListener('submit', async e => {
 document.getElementById('logout-btn').addEventListener('click', () => {
   fbAuth.signOut();
 });
-
-// Reset password
-const resetBtn = document.getElementById('reset-pw-btn');
-if (resetBtn) {
-  resetBtn.addEventListener('click', async () => {
-    const email = document.getElementById('email').value.trim();
-    if (!email) {
-      showToast('Digite seu e-mail primeiro');
-      return;
-    }
-    try {
-      await fbAuth.sendPasswordResetEmail(email);
-      showToast('✓ E-mail de redefinição enviado');
-    } catch (err) {
-      console.error(err);
-      showToast('Erro: ' + (err.message || 'tente novamente'));
-    }
-  });
-}
 
 async function showApp() {
   document.getElementById('login-screen').style.display = 'none';
